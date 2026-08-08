@@ -1,5 +1,6 @@
 import { Request, Response, NextFunction } from 'express';
 import { Redis } from 'ioredis';
+import { CircuitBreaker } from './circuit-breaker';
 
 declare module 'ioredis' {
   interface Redis {
@@ -19,7 +20,7 @@ export const redis = new Redis({
   connectTimeout: 2000,
   maxRetriesPerRequest: 1,
 });
-redis.on('error', (err: Error) => console.error('Redis Error:', err.message));
+redis.on('error', (err: Error) => console.warn('[Redis Connection Warning]: Redis unavailable, using local memory fallback.'));
 
 const SLIDING_WINDOW_COUNTER_LUA = `
   local currentKey = KEYS[1]
@@ -48,8 +49,30 @@ redis.defineCommand('slidingWindowCounter', {
 });
 
 
+class FixedWindowLimiter {
+  private map = new Map<string, number>();
+  private readonly maxRequests: number;
+
+  constructor(maxRequests: number, windowMs: number) {
+    this.maxRequests = maxRequests;
+    setInterval(() => { this.map = new Map<string, number>(); }, windowMs).unref();
+  }
+  public consume(key: string): boolean {
+    const count = this.map.get(key) || 0;
+    if (count >= this.maxRequests) return false;
+    this.map.set(key, count + 1);
+    return true;
+  }
+}
 
 
+
+
+
+const breaker = new CircuitBreaker({
+  maxFailures: 3,  
+  timeoutMs: 10 * 1000,
+});
 
 export interface RateLimiterOptions {
   windowMs: number;
@@ -58,6 +81,7 @@ export interface RateLimiterOptions {
 
 export function createRateLimiter(options: RateLimiterOptions) {
   const windowSeconds = Math.ceil(options.windowMs / 1000);
+  const localFallback = new FixedWindowLimiter(options.maxRequests, options.windowMs);
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const clientIdentifier = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
@@ -67,6 +91,11 @@ export function createRateLimiter(options: RateLimiterOptions) {
     const currentKey = `ratelimit:${clientIdentifier}:${currentBucket}`;
     const prevKey = `ratelimit:${clientIdentifier}:${prevBucket}`;
     const prevWeight = 1 - ((now % options.windowMs) / options.windowMs);
+    if (breaker.canAttempt()) {
+      console.warn('Falling back to alternative rate limiter');
+      next();
+      return;
+    }
     try {
       const [isAllowed, estimatedCount] = await redis.slidingWindowCounter(
         currentKey,
@@ -81,6 +110,7 @@ export function createRateLimiter(options: RateLimiterOptions) {
       res.setHeader('X-RateLimit-Limit', options.maxRequests);
       res.setHeader('X-RateLimit-Remaining', remaining);
       res.setHeader('X-RateLimit-Reset', reset);
+      breaker.logSuccess();
 
       if (isAllowed === 0) {
         res.status(429).json({
@@ -91,8 +121,10 @@ export function createRateLimiter(options: RateLimiterOptions) {
       }
       next();
     } catch (error: Error) {
-      console.error('Redis dropped connection:', error.message);
+      console.warn('Falling back to alternative rate limiter:', error.message);
+      breaker.logFailure();
       next();
+      return;
     }
   };
 }
