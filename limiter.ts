@@ -85,16 +85,27 @@ export function createRateLimiter(options: RateLimiterOptions) {
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const clientIdentifier = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
+    const runAlternative = () => {
+      const isAllowed = localFallback.consume(clientIdentifier);
+      if (!isAllowed) {
+        res.status(429).json({
+          error: 'Too Many Requests',
+          message: `Exceeded maximum requests within this window. ${options.maxRequests} requests allowed.`,
+        });
+        return; 
+      }
+      next();
+    };
     const currentBucket = Math.floor(now / options.windowMs) * windowSeconds;
     const prevBucket = currentBucket - windowSeconds;
 
     const currentKey = `ratelimit:${clientIdentifier}:${currentBucket}`;
     const prevKey = `ratelimit:${clientIdentifier}:${prevBucket}`;
     const prevWeight = 1 - ((now % options.windowMs) / options.windowMs);
-    if (breaker.canAttempt()) {
+
+    if (!breaker.canAttempt()) {
       console.warn('Falling back to alternative rate limiter');
-      next();
-      return;
+      return runAlternative();
     }
     try {
       const [isAllowed, estimatedCount] = await redis.slidingWindowCounter(
@@ -123,8 +134,7 @@ export function createRateLimiter(options: RateLimiterOptions) {
     } catch (error: Error) {
       console.warn('Falling back to alternative rate limiter:', error.message);
       breaker.logFailure();
-      next();
-      return;
+      return runAlternative();
     }
   };
 }
