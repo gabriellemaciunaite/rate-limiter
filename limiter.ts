@@ -108,6 +108,14 @@ export function createRateLimiter(options: RateLimiterOptions) {
       return runAlternative();
     }
     try {
+      const isBanned = await redis.get(`blocklist:${clientIdentifier}`);
+      if (isBanned) {
+        res.status(403).json({
+          error: 'Forbidden',
+          message: 'Your IP has been temporarily banned for (one) hour for API abuse.',
+        });
+        return;
+      }
       const [isAllowed, estimatedCount] = await redis.slidingWindowCounter(
         currentKey,
         prevKey,
@@ -124,6 +132,13 @@ export function createRateLimiter(options: RateLimiterOptions) {
       breaker.logSuccess();
 
       if (isAllowed === 0) {
+        const strikeKey = `strikes:${clientIdentifier}`;
+        const strikes = await redis.incr(strikeKey);
+        if (strikes === 1) await redis.expire(strikeKey, 60); 
+        if (strikes >= 5) {
+          console.warn(`Client IP ${clientIdentifier} banned for (one) hour for too many failed requests.`);
+          await redis.set(`blocklist:${clientIdentifier}`, '1', 'EX', 3600); 
+        }
         res.status(429).json({
           error: 'Too Many Requests',
           message: `Exceeded maximum requests within this window. ${options.maxRequests} requests allowed.`,
