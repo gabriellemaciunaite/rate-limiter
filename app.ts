@@ -9,6 +9,9 @@ app.use(express.json());
 const rateLimiter = createRateLimiter({
   windowMs: 60 * 1000, // 60-second window bucket
   maxRequests: 10,     // 10 allowed requests
+  maxStrikes: 5,
+  strikeWindowTime: 60,
+  penaltyDuration: 3600,
 });
 
 app.use('/', rateLimiter);

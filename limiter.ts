@@ -77,11 +77,17 @@ const breaker = new CircuitBreaker({
 export interface RateLimiterOptions {
   windowMs: number;
   maxRequests: number;
+  maxStrikes?: number;
+  strikeWindowTime?: number; 
+  penaltyDuration?: number;
 }
 
 export function createRateLimiter(options: RateLimiterOptions) {
   const windowSeconds = Math.ceil(options.windowMs / 1000);
   const localFallback = new FixedWindowLimiter(options.maxRequests, options.windowMs);
+  const maxStrikes = options.numStrikes ?? 5;
+  const strikeWindowTime = options.strikeWindowTime ?? 60;
+  const penaltyDuration = options.penaltyDuration ?? 3600;
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const clientIdentifier = req.ip || req.socket.remoteAddress || 'unknown';
     const now = Date.now();
@@ -112,7 +118,7 @@ export function createRateLimiter(options: RateLimiterOptions) {
       if (isBanned) {
         res.status(403).json({
           error: 'Forbidden',
-          message: 'Your IP has been temporarily banned for (one) hour for API abuse.',
+          message: 'Your IP has been temporarily banned for API abuse.',
         });
         return;
       }
@@ -134,10 +140,10 @@ export function createRateLimiter(options: RateLimiterOptions) {
       if (isAllowed === 0) {
         const strikeKey = `strikes:${clientIdentifier}`;
         const strikes = await redis.incr(strikeKey);
-        if (strikes === 1) await redis.expire(strikeKey, 60); 
-        if (strikes >= 5) {
+        if (strikes === 1) await redis.expire(strikeKey, strikeWindowTime); 
+        if (maxStrikes >= 5) {
           console.warn(`Client IP ${clientIdentifier} banned for (one) hour for too many failed requests.`);
-          await redis.set(`blocklist:${clientIdentifier}`, '1', 'EX', 3600); 
+          await redis.set(`blocklist:${clientIdentifier}`, '1', 'EX', penaltyDuration); 
         }
         res.status(429).json({
           error: 'Too Many Requests',
