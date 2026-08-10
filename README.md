@@ -29,7 +29,7 @@ sudo docker run -d -p 6379:6379 --name limiter-redis redis:alpine
 ### 3. Run the Development Server
 The server will start at [http://127.0.0.1:3000](http://127.0.0.1:3000).
 ```
-npx ts-node app.ts
+npx tsx app.ts
 
 ```
 
@@ -40,6 +40,6 @@ npx ts-node app.ts
 To clear strikes and blocklists from Redis during local testing:
 
 ```
-docker exec -it limiter-redis redis-cli FLUSHALL
+sudo docker exec -it limiter-redis redis-cli FLUSHALL
 
 ```
