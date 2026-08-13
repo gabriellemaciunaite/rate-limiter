@@ -85,7 +85,7 @@ export interface RateLimiterOptions {
 export function createRateLimiter(options: RateLimiterOptions) {
   const windowSeconds = Math.ceil(options.windowMs / 1000);
   const localFallback = new FixedWindowLimiter(options.maxRequests, options.windowMs);
-  const maxStrikes = options.numStrikes ?? 5;
+  const maxStrikes = options.maxStrikes ?? 5;
   const strikeWindowTime = options.strikeWindowTime ?? 60;
   const penaltyDuration = options.penaltyDuration ?? 3600;
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
@@ -141,8 +141,8 @@ export function createRateLimiter(options: RateLimiterOptions) {
         const strikeKey = `strikes:${clientIdentifier}`;
         const strikes = await redis.incr(strikeKey);
         if (strikes === 1) await redis.expire(strikeKey, strikeWindowTime); 
-        if (maxStrikes >= 5) {
-          console.warn(`Client IP ${clientIdentifier} banned for (one) hour for too many failed requests.`);
+        if (strikes >= maxStrikes) {
+          console.warn(`Client IP ${clientIdentifier} banned for ${penaltyDuration}s for too many failed requests.`);
           await redis.set(`blocklist:${clientIdentifier}`, '1', 'EX', penaltyDuration); 
         }
         res.status(429).json({
